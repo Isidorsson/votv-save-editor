@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VotV Save Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="ambient" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="19" r="1.6" />
+          <path d="M7.5 16a6 6 0 0 1 9 0" />
+          <path d="M4.5 13a10.5 10.5 0 0 1 15 0" />
+          <path d="M1.8 10a14.5 14.5 0 0 1 20.4 0" />
+        </svg>
+        <span class="brand-name">VotV <b>Save Console</b></span>
+      </div>
+
+      <div class="file-chip" id="fileChip" hidden>
+        <span class="dot" id="dirtyDot"></span>
+        <span id="fileName" class="fname"></span>
+        <span id="fileMeta" class="fmeta"></span>
+      </div>
+
+      <div class="actions">
+        <input type="file" id="file" accept=".sav" hidden />
+        <button id="open" class="btn">Open <span class="ext">.sav</span></button>
+        <button id="backup" class="btn ghost" disabled>Backup</button>
+        <button id="save" class="btn primary" disabled>Save</button>
+      </div>
+    </header>
+
+    <!-- empty state -->
+    <main id="empty" class="empty">
+      <div class="radar" aria-hidden="true">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <span class="sweep"></span><span class="core"></span>
+      </div>
+      <h1>Open a Voices of the Void save</h1>
+      <p class="lead">Drop a <code>.sav</code> file anywhere, or open one. Everything is decoded in your browser — nothing is uploaded.</p>
+      <button id="emptyOpen" class="btn primary lg">Open save file</button>
+      <p class="path-hint">Saves live in <code>%localappdata%\VotV\Saved\SaveGames</code> · filenames start with <code>s_</code></p>
+    </main>
+
+    <!-- loading -->
+    <main id="loading" class="loading" hidden>
+      <div class="radar small spinning" aria-hidden="true">
+        <span class="ring"></span><span class="ring"></span><span class="sweep"></span><span class="core"></span>
+      </div>
+      <p>Decoding save…</p>
+    </main>
+
+    <!-- editor shell -->
+    <div id="editor" class="shell" hidden>
+      <nav class="rail" id="rail" aria-label="Sections"></nav>
+
+      <main class="content" id="content">
+        <section id="sec-status" class="section">
+          <div class="readout" id="readout"></div>
+        </section>
+
+        <div id="groups"></div>
+
+        <section id="sec-inventory" class="section" hidden>
+          <div class="section-head">
+            <h2>Inventory <span class="count" id="invCount"></span></h2>
+            <button id="invAdd" class="btn ghost sm">+ Add item</button>
+          </div>
+          <div class="items" id="inv"></div>
+        </section>
+
+        <section id="sec-equipment" class="section" hidden>
+          <div class="section-head">
+            <h2>Equipment <span class="count" id="eqCount"></span></h2>
+            <button id="eqAdd" class="btn ghost sm">+ Add item</button>
+          </div>
+          <div class="items" id="eq"></div>
+        </section>
+
+        <section id="sec-raw" class="section">
+          <div class="section-head"><h2>All fields</h2></div>
+          <input type="search" id="search" class="search" placeholder="Filter fields…" />
+          <div id="all" class="rows"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="modal" class="modal">
+      <div class="modal-head">
+        <strong id="modalTitle">Choose item</strong>
+        <button id="modalClose" class="btn ghost sm" aria-label="Close">✕</button>
+      </div>
+      <input type="search" id="pickSearch" class="search" placeholder="Search items — fuse, food, light…" />
+      <div id="pickList" class="pick-list"></div>
+      <div class="modal-foot">
+        <input type="text" id="customPath" class="search" placeholder="/Game/objects/prop_xxx.prop_xxx_C" />
+        <button id="customUse" class="btn sm">Use path</button>
+      </div>
+    </dialog>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+
+    <div id="dropveil" class="dropveil" hidden><span>Release to load save</span></div>
+
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
