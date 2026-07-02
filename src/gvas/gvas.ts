@@ -50,6 +50,24 @@ export interface StructArrayHeader {
   guidFlag: number; // trailing byte, normally 0
 }
 
+// One key or value inside a MapProperty. Keys/values are serialized as bare
+// values (no per-entry tag): primitives per their inner type, or a struct as a
+// bare property list. Byte keys/values are enum FNames (fstring), handled in
+// readMapEntry/writeMapEntry.
+export type MapEntryData =
+  | { kind: "primitive"; value: Scalar }
+  | { kind: "struct"; body: StructBody };
+
+export interface MapEntry {
+  key: MapEntryData;
+  value: MapEntryData;
+}
+
+export interface MapValue {
+  numKeysToRemove: number; // leading int32, normally 0
+  entries: MapEntry[];
+}
+
 export type Value =
   | { kind: "int"; value: number }
   | { kind: "float"; value: number }
@@ -60,6 +78,7 @@ export type Value =
   | { kind: "byte"; enumName: string; bytes: Uint8Array }
   | { kind: "struct"; structType: string; structGuid: Uint8Array; body: StructBody }
   | { kind: "array"; innerType: string; value: ArrayValue }
+  | { kind: "map"; keyType: string; valueType: string; value: MapValue }
   | { kind: "opaque"; bytes: Uint8Array };
 
 export interface Property {
@@ -178,6 +197,14 @@ function readProperty(r: BinaryReader, name: string): Property {
       value = { kind: "array", innerType, value: av };
       break;
     }
+    case "MapProperty": {
+      const keyType = r.fstring();
+      const valueType = r.fstring();
+      readGuid();
+      const mv = readMap(r, keyType, valueType);
+      value = { kind: "map", keyType, valueType, value: mv };
+      break;
+    }
     case "TextProperty":
       readGuid();
       value = { kind: "opaque", bytes: r.take(size) };
@@ -256,6 +283,31 @@ function readPrimitive(r: BinaryReader, innerType: string): Scalar {
   }
 }
 
+// The value payload of a MapProperty (counted by the tag's Size): an int32
+// num-keys-to-remove (normally 0), an int32 element count, then that many
+// key/value pairs serialized back-to-back per the inner types.
+function readMap(r: BinaryReader, keyType: string, valueType: string): MapValue {
+  const numKeysToRemove = r.i32();
+  const count = r.i32();
+  const entries: MapEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    const key = readMapEntry(r, keyType);
+    const value = readMapEntry(r, valueType);
+    entries.push({ key, value });
+  }
+  return { numKeysToRemove, entries };
+}
+
+function readMapEntry(r: BinaryReader, innerType: string): MapEntryData {
+  // Non-native structs serialize as a bare property list (terminated by None).
+  if (innerType === "StructProperty") {
+    return { kind: "struct", body: { kind: "props", props: readPropertyList(r) } };
+  }
+  // A ByteProperty key/value is an enum FName, not a raw byte, inside a map.
+  if (innerType === "ByteProperty") return { kind: "primitive", value: r.fstring() };
+  return { kind: "primitive", value: readPrimitive(r, innerType) };
+}
+
 // ---------------------------------------------------------------- writing ----
 
 export function writeGvas(file: GvasFile): Uint8Array {
@@ -305,6 +357,10 @@ function writeTagExtra(w: BinaryWriter, v: Value): void {
     case "array":
       w.fstring(v.innerType);
       break;
+    case "map":
+      w.fstring(v.keyType);
+      w.fstring(v.valueType);
+      break;
     default:
       break;
   }
@@ -337,6 +393,9 @@ function writeValue(w: BinaryWriter, v: Value): void {
     case "array":
       writeArray(w, v.value);
       break;
+    case "map":
+      writeMap(w, v.keyType, v.valueType, v.value);
+      break;
   }
 }
 
@@ -368,6 +427,28 @@ function writeArray(w: BinaryWriter, av: ArrayValue): void {
     return;
   }
   for (const item of av.items) writePrimitive(w, av.innerType, item);
+}
+
+function writeMap(w: BinaryWriter, keyType: string, valueType: string, mv: MapValue): void {
+  w.i32(mv.numKeysToRemove);
+  w.i32(mv.entries.length);
+  for (const e of mv.entries) {
+    writeMapEntry(w, keyType, e.key);
+    writeMapEntry(w, valueType, e.value);
+  }
+}
+
+function writeMapEntry(w: BinaryWriter, innerType: string, data: MapEntryData): void {
+  if (data.kind === "struct") {
+    writeStructBody(w, data.body);
+    return;
+  }
+  // Mirror readMapEntry: a ByteProperty entry is an enum FName.
+  if (innerType === "ByteProperty") {
+    w.fstring(data.value as string);
+    return;
+  }
+  writePrimitive(w, innerType, data.value);
 }
 
 function writePrimitive(w: BinaryWriter, innerType: string, item: Scalar): void {

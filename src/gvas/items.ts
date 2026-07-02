@@ -8,6 +8,8 @@
 import type {
   ArrayValue,
   GvasFile,
+  MapEntryData,
+  MapValue,
   Property,
   StructBody,
   Value,
@@ -200,6 +202,17 @@ function cloneArray(a: ArrayValue): ArrayValue {
   };
 }
 
+function cloneMapEntry(d: MapEntryData): MapEntryData {
+  return d.kind === "struct" ? { kind: "struct", body: cloneBody(d.body) } : { ...d };
+}
+
+function cloneMap(m: MapValue): MapValue {
+  return {
+    numKeysToRemove: m.numKeysToRemove,
+    entries: m.entries.map((e) => ({ key: cloneMapEntry(e.key), value: cloneMapEntry(e.value) })),
+  };
+}
+
 function cloneValue(v: Value): Value {
   switch (v.kind) {
     case "int":
@@ -217,6 +230,8 @@ function cloneValue(v: Value): Value {
       return { kind: "struct", structType: v.structType, structGuid: v.structGuid.slice(), body: cloneBody(v.body) };
     case "array":
       return { kind: "array", innerType: v.innerType, value: cloneArray(v.value) };
+    case "map":
+      return { kind: "map", keyType: v.keyType, valueType: v.valueType, value: cloneMap(v.value) };
   }
 }
 
