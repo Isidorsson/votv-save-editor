@@ -12,6 +12,7 @@ import type {
   StructBody,
   Value,
 } from "./gvas";
+import { ITEM_NAME_OVERRIDES, KNOWN_ITEM_BASES } from "./item-catalog";
 
 const stripGuid = (name: string): string => name.replace(/_\d+_[0-9A-Fa-f]{32}$/, "");
 
@@ -70,6 +71,22 @@ export function harvestCatalog(file: GvasFile): CatalogEntry[] {
   return [...seen]
     .map((classPath) => ({ classPath, name: friendlyName(classPath) }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The obtainable-item catalog: every known summonable prop plus anything this
+// particular save happens to reference. Known entries win on name (so curated
+// overrides show through), and save-only paths — grime, structural, npc,
+// trigger props the known list omits — are still kept so nothing regresses.
+const KNOWN_ITEMS: CatalogEntry[] = KNOWN_ITEM_BASES.map((base) => {
+  const classPath = `/Game/objects/${base}.${base}_C`;
+  return { classPath, name: ITEM_NAME_OVERRIDES[base] ?? friendlyName(classPath) };
+});
+
+export function buildCatalog(file: GvasFile): CatalogEntry[] {
+  const byPath = new Map<string, CatalogEntry>();
+  for (const e of KNOWN_ITEMS) byPath.set(e.classPath, e);
+  for (const e of harvestCatalog(file)) if (!byPath.has(e.classPath)) byPath.set(e.classPath, e);
+  return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ------------------------------------------------------------- containers ----

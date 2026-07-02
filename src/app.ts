@@ -1,6 +1,6 @@
 import { readGvas, writeGvas, type GvasFile } from "./gvas/gvas";
 import { collectLeaves, coerceInput, BAR_GROUP_IDS, FIELD_GROUPS, type ScalarLeaf } from "./gvas/edit";
-import { getContainer, harvestCatalog, type CatalogEntry, type ContainerView } from "./gvas/items";
+import { getContainer, buildCatalog, type CatalogEntry, type ContainerView } from "./gvas/items";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -105,7 +105,7 @@ async function loadFile(f: File): Promise<void> {
     state.original = bytes;
     state.name = f.name;
     state.dirty = false;
-    state.catalog = harvestCatalog(parsed);
+    state.catalog = buildCatalog(parsed);
     rebuild();
     buildPickList();
     els.save.disabled = false;
