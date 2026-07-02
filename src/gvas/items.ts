@@ -139,23 +139,83 @@ function rekey(element: StructBody, key: string): void {
   }
 }
 
+// ------------------------------------------------------------- GObjStack sync ----
+
+// The player's carried inventory is stored redundantly in TWO structures that
+// must agree: `inventoryData` (the flat list this view edits) and one entry of
+// `GObjStack` — the stack the game actually loads into the inventory on load.
+// Adding an item to inventoryData alone leaves it unregistered, so it never
+// appears in game. We locate the player's GObjStack entry as the one whose item
+// keys overlap inventoryData (item keys are globally unique, so it's
+// unambiguous) and mirror every add/remove/class-change into it. A fresh/empty
+// inventory finds no stack, and we fall back to editing inventoryData alone.
+
+function keyOf(el: StructBody | undefined): string {
+  if (!el || el.kind !== "props") return "";
+  const k = find(el.props, "key")?.value;
+  return k?.kind === "name" ? k.value : "";
+}
+
+function gobjStackItems(entry: StructBody): StructBody[] | null {
+  if (entry.kind !== "props") return null;
+  const obj = find(entry.props, "obj")?.value;
+  return obj?.kind === "array" && obj.value.kind === "struct" ? obj.value.items : null;
+}
+
+function findPlayerStack(file: GvasFile, invItems: StructBody[]): StructBody[] | null {
+  const gv = find(file.root, "GObjStack")?.value;
+  if (!gv || gv.kind !== "array" || gv.value.kind !== "struct") return null;
+  const invKeys = new Set(invItems.map(keyOf).filter(Boolean));
+  if (!invKeys.size) return null;
+  let best: StructBody[] | null = null;
+  let bestOverlap = 0;
+  for (const entry of gv.value.items) {
+    const items = gobjStackItems(entry);
+    if (!items) continue;
+    const overlap = items.reduce((n, el) => n + (invKeys.has(keyOf(el)) ? 1 : 0), 0);
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      best = items;
+    }
+  }
+  return best;
+}
+
+function syncStackClass(items: StructBody[], key: string, classPath: string): void {
+  const el = items.find((e) => keyOf(e) === key);
+  if (el && el.kind === "props") {
+    const ref = find(el.props, "class")?.value;
+    if (ref?.kind === "object") ref.value = classPath;
+  }
+}
+
+function removeFromStack(items: StructBody[], key: string): void {
+  const i = items.findIndex((e) => keyOf(e) === key);
+  if (i >= 0) items.splice(i, 1);
+}
+
 export function getContainer(file: GvasFile, name: ContainerView["name"]): ContainerView | null {
   const root = find(file.root, name);
   if (!root || root.value.kind !== "array" || root.value.value.kind !== "struct") return null;
   const arr: ArrayValue & { kind: "struct" } = root.value.value;
+
+  // Inventory items are mirrored into the player's GObjStack entry; equipment isn't.
+  const mirror = name === "inventoryData" ? findPlayerStack(file, arr.items) : null;
 
   const build = (): SlotItem[] =>
     arr.items.map((el, index) => {
       const ref = classRefOf(el, name);
       const classPath = ref?.kind === "object" ? ref.value : "";
       const keyProp = el.kind === "props" ? find(el.props, "key")?.value : undefined;
+      const key = keyProp?.kind === "name" ? keyProp.value : "";
       return {
         index,
         classPath,
         label: slotLabel(el, name, classPath),
-        key: keyProp?.kind === "name" ? keyProp.value : "",
+        key,
         setClass(path: string) {
           if (ref?.kind === "object") ref.value = path;
+          if (mirror && key) syncStackClass(mirror, key, path);
         },
       };
     });
@@ -173,10 +233,13 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
       const ref = classRefOf(clone, name);
       if (ref?.kind === "object") ref.value = classPath;
       arr.items.push(clone);
+      if (mirror) mirror.push(cloneBody(clone)); // identical twin, same key + class
       view.items = build();
     },
     remove(index: number) {
+      const key = keyOf(arr.items[index]);
       arr.items.splice(index, 1);
+      if (mirror && key) removeFromStack(mirror, key);
       view.items = build();
     },
   };
