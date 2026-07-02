@@ -34,6 +34,9 @@ const els = {
   modalClose: $<HTMLButtonElement>("modalClose"),
   pickSearch: $<HTMLInputElement>("pickSearch"),
   pickList: $<HTMLElement>("pickList"),
+  pickCount: $<HTMLElement>("pickCount"),
+  pickEmpty: $<HTMLElement>("pickEmpty"),
+  pickEmptyTerm: $<HTMLElement>("pickEmptyTerm"),
   customPath: $<HTMLInputElement>("customPath"),
   customUse: $<HTMLButtonElement>("customUse"),
   toasts: $<HTMLElement>("toasts"),
@@ -107,7 +110,6 @@ async function loadFile(f: File): Promise<void> {
     state.dirty = false;
     state.catalog = buildCatalog(parsed);
     rebuild();
-    buildPickList();
     els.save.disabled = false;
     els.backup.disabled = false;
     els.fileChip.hidden = false;
@@ -416,15 +418,30 @@ function afterStructuralEdit(): void {
 
 // --------------------------------------------------------------------- picker
 
-let pickTarget: ((path: string) => void) | null = null;
+// The catalog runs to 1,200+ entries, so the picker renders only the current
+// matches (capped) instead of the whole list, and keeps focus in the search box
+// while arrow keys move a roving highlight (aria-activedescendant combobox).
+const PICK_CAP = 200;
 
-function buildPickList(): void {
-  els.pickList.replaceChildren();
-  for (const entry of state.catalog) {
+let pickTarget: ((path: string) => void) | null = null;
+let pickRows: HTMLButtonElement[] = [];
+let pickActive = -1;
+
+function renderPickList(query: string): void {
+  const q = query.trim().toLowerCase();
+  const matches = q
+    ? state.catalog.filter((e) => `${e.name} ${e.classPath}`.toLowerCase().includes(q))
+    : state.catalog;
+  const shown = matches.slice(0, PICK_CAP);
+
+  const frag = document.createDocumentFragment();
+  pickRows = shown.map((entry, i) => {
     const row = document.createElement("button");
     row.className = "pick";
     row.type = "button";
-    row.dataset.q = `${entry.name} ${entry.classPath}`.toLowerCase();
+    row.id = `pick-${i}`;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
     const n = document.createElement("span");
     n.className = "pname";
     n.textContent = entry.name;
@@ -433,15 +450,98 @@ function buildPickList(): void {
     c.textContent = entry.classPath.split("/").pop() ?? "";
     row.append(n, c);
     row.onclick = () => choose(entry.classPath);
-    els.pickList.append(row);
+    row.onmousemove = () => {
+      if (pickActive !== i) setActive(i);
+    };
+    frag.append(row);
+    return row;
+  });
+  els.pickList.replaceChildren(frag);
+
+  const empty = shown.length === 0;
+  els.pickList.hidden = empty;
+  els.pickEmpty.hidden = !empty;
+  els.pickEmptyTerm.textContent = query.trim();
+  els.pickCount.textContent = empty
+    ? "no matches"
+    : matches.length > shown.length
+      ? `showing ${shown.length} of ${matches.length.toLocaleString()}`
+      : `${matches.length.toLocaleString()} ${matches.length === 1 ? "item" : "items"}`;
+
+  setActive(empty ? -1 : 0);
+}
+
+function setActive(i: number): void {
+  pickActive = i;
+  pickRows.forEach((row, idx) => {
+    const on = idx === i;
+    row.classList.toggle("active", on);
+    row.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  const row = i >= 0 ? pickRows[i] : undefined;
+  if (row) {
+    row.scrollIntoView({ block: "nearest" });
+    els.pickSearch.setAttribute("aria-activedescendant", row.id);
+  } else {
+    els.pickSearch.removeAttribute("aria-activedescendant");
   }
 }
 
-function filterPickList(q: string): void {
-  const needle = q.toLowerCase();
-  for (const row of Array.from(els.pickList.children) as HTMLElement[]) {
-    row.classList.toggle("hidden", !!needle && !row.dataset.q!.includes(needle));
+function moveActive(delta: number): void {
+  const n = pickRows.length;
+  if (!n) return;
+  const next = pickActive < 0 ? (delta > 0 ? 0 : n - 1) : (pickActive + delta + n) % n;
+  setActive(next);
+}
+
+function onPickKeydown(e: KeyboardEvent): void {
+  switch (e.key) {
+    case "ArrowDown":
+      e.preventDefault();
+      moveActive(1);
+      break;
+    case "ArrowUp":
+      e.preventDefault();
+      moveActive(-1);
+      break;
+    case "Home":
+      if (pickRows.length) {
+        e.preventDefault();
+        setActive(0);
+      }
+      break;
+    case "End":
+      if (pickRows.length) {
+        e.preventDefault();
+        setActive(pickRows.length - 1);
+      }
+      break;
+    case "Enter": {
+      e.preventDefault();
+      const row = pickActive >= 0 ? pickRows[pickActive] : undefined;
+      if (row) row.click();
+      else els.customPath.focus(); // no matches — guide to the escape hatch
+      break;
+    }
   }
+}
+
+// Accept a full "/Game/objects/prop_x.prop_x_C" path as-is, or expand a bare
+// summon name ("prop_physgun" / "prop_physgun_c") to the standard object path.
+function normalizeClassPath(input: string): string {
+  const s = input.trim();
+  if (s.startsWith("/") || s.includes(".")) return s;
+  const base = s.replace(/_c$/i, "");
+  return `/Game/objects/${base}.${base}_C`;
+}
+
+function useCustomPath(): void {
+  const raw = els.customPath.value.trim();
+  if (!raw) {
+    els.customPath.focus();
+    return;
+  }
+  choose(normalizeClassPath(raw));
 }
 
 function openPicker(title: string, onPick: (path: string) => void): void {
@@ -449,7 +549,7 @@ function openPicker(title: string, onPick: (path: string) => void): void {
   els.modalTitle.textContent = title;
   els.pickSearch.value = "";
   els.customPath.value = "";
-  filterPickList("");
+  renderPickList("");
   els.modal.showModal();
   els.pickSearch.focus();
 }
@@ -457,6 +557,8 @@ function openPicker(title: string, onPick: (path: string) => void): void {
 function choose(path: string): void {
   const cb = pickTarget;
   pickTarget = null;
+  pickRows = [];
+  pickActive = -1;
   els.modal.close();
   cb?.(path);
 }
@@ -567,11 +669,15 @@ els.eqAdd.onclick = () =>
     afterStructuralEdit();
   });
 
-els.pickSearch.oninput = () => filterPickList(els.pickSearch.value);
+els.pickSearch.oninput = () => renderPickList(els.pickSearch.value);
+els.pickSearch.onkeydown = onPickKeydown;
 els.modalClose.onclick = () => els.modal.close();
-els.customUse.onclick = () => {
-  const path = els.customPath.value.trim();
-  if (path) choose(path);
+els.customUse.onclick = useCustomPath;
+els.customPath.onkeydown = (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    useCustomPath();
+  }
 };
 
 // drag & drop anywhere

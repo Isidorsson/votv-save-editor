@@ -95,16 +95,45 @@
       </main>
     </div>
 
-    <dialog id="modal" class="modal">
+    <dialog id="modal" class="modal" aria-labelledby="modalTitle">
       <div class="modal-head">
         <strong id="modalTitle">Choose item</strong>
-        <button id="modalClose" class="btn ghost sm" aria-label="Close">✕</button>
+        <button id="modalClose" class="btn ghost sm" aria-label="Close picker">✕</button>
       </div>
-      <input type="search" id="pickSearch" class="search" placeholder="Search items — fuse, food, light…" />
-      <div id="pickList" class="pick-list"></div>
+      <input
+        type="search"
+        id="pickSearch"
+        class="search"
+        placeholder="Search 1,200+ items — flashlight, physgun, mre…"
+        role="combobox"
+        aria-expanded="true"
+        aria-controls="pickList"
+        aria-autocomplete="list"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="pick-status" aria-live="polite"><span id="pickCount"></span></div>
+      <div id="pickList" class="pick-list" role="listbox" aria-label="Matching items"></div>
+      <div id="pickEmpty" class="pick-empty" hidden>
+        <p class="pe-title">No items match “<span id="pickEmptyTerm"></span>”</p>
+        <p class="pe-sub">Check the spelling, or paste an exact class path below to add it anyway.</p>
+      </div>
       <div class="modal-foot">
-        <input type="text" id="customPath" class="search" placeholder="/Game/objects/prop_xxx.prop_xxx_C" />
-        <button id="customUse" class="btn sm">Use path</button>
+        <label class="foot-label" for="customPath">Not listed?</label>
+        <input
+          type="text"
+          id="customPath"
+          class="search"
+          placeholder="prop_name or /Game/objects/prop_name.prop_name_C"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="customUse" class="btn sm">Add</button>
+      </div>
+      <div class="modal-hints" aria-hidden="true">
+        <span class="hk"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span class="hk"><kbd>↵</kbd> add</span>
+        <span class="hk"><kbd>esc</kbd> close</span>
       </div>
     </dialog>
 

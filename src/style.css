@@ -731,6 +731,7 @@ input.bad {
 }
 .modal .search {
   flex: none;
+  margin-bottom: 0.5rem;
 }
 .modal::backdrop {
   background: oklch(0.1 0.01 168 / 0.6);
@@ -748,16 +749,30 @@ input.bad {
 .modal-head strong {
   font-weight: 600;
 }
+
+/* thin match-count status line under the search box */
+.pick-status {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  min-height: 1rem;
+  margin-bottom: 0.35rem;
+  padding: 0 0.6rem;
+  font: 500 0.68rem var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
 .pick-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   margin: 0 -0.3rem;
+  scroll-padding: 0.3rem 0;
 }
 .pick {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  display: flex;
   align-items: baseline;
   gap: 0.7rem;
   width: 100%;
@@ -769,20 +784,30 @@ input.bad {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  scroll-margin: 0.3rem;
   transition: background 0.12s;
 }
-.pick:hover,
-.pick:focus-visible {
+/* keyboard/mouse highlight — the row Enter will pick */
+.pick.active {
   background: var(--surface-2);
-  outline: none;
+}
+.pick.active::after {
+  content: "↵";
+  flex: none;
+  align-self: center;
+  font: 500 0.72rem var(--font-mono);
+  color: var(--accent);
 }
 .pick .pname {
+  flex: 0 1 auto;
   font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .pick .pcls {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--muted);
@@ -791,13 +816,46 @@ input.bad {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* no-match state — teaches the custom-path escape hatch below it */
+.pick-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 1.5rem 1rem;
+  text-align: center;
+}
+.pe-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--ink-2);
+}
+.pe-sub {
+  margin: 0;
+  max-width: 38ch;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .modal-foot {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   flex: none;
   margin-top: 0.9rem;
   padding-top: 0.9rem;
   border-top: 1px solid var(--line-soft);
+}
+.foot-label {
+  flex: none;
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .modal-foot .search {
   margin: 0;
@@ -808,6 +866,31 @@ input.bad {
 .modal-foot .btn {
   flex: none;
   white-space: nowrap;
+}
+
+.modal-hints {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 0.7rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.hk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+kbd {
+  font: 500 0.66rem var(--font-mono);
+  line-height: 1;
+  padding: 0.16rem 0.34rem;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
 }
 
 /* ------------------------------------------------------------------ toasts */
