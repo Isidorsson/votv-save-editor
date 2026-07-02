@@ -194,6 +194,43 @@ function removeFromStack(items: StructBody[], key: string): void {
   if (i >= 0) items.splice(i, 1);
 }
 
+// A struct_save's blueprint class lives in its top-level `class` ObjectProperty.
+function topClass(el: StructBody): string {
+  if (el.kind !== "props") return "";
+  const c = find(el.props, "class")?.value;
+  return c?.kind === "object" ? c.value : "";
+}
+
+// The right template for a new inventory item is a REAL one of the same class:
+// each item carries per-type state — an internal item tag (e.g. beer→"beer_c",
+// screwdriver→"tool_sc") plus saved variables — that must match its class or the
+// game won't render it. Cloning an arbitrary slot and only swapping the class
+// leaves that state mismatched. Search the inventory, then the world objects,
+// then the object stacks. Returns null when the class exists nowhere in the save
+// (e.g. an item never obtained), in which case the caller falls back to a
+// generic clone that may not display in game.
+function findInventoryTemplate(file: GvasFile, items: StructBody[], classPath: string): StructBody | null {
+  const match = (el: StructBody): boolean => topClass(el) === classPath;
+
+  const inInventory = items.find(match);
+  if (inInventory) return inInventory;
+
+  const od = find(file.root, "objectsData")?.value;
+  if (od?.kind === "array" && od.value.kind === "struct") {
+    const hit = od.value.items.find(match);
+    if (hit) return hit;
+  }
+
+  const gv = find(file.root, "GObjStack")?.value;
+  if (gv?.kind === "array" && gv.value.kind === "struct") {
+    for (const entry of gv.value.items) {
+      const hit = gobjStackItems(entry)?.find(match);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 export function getContainer(file: GvasFile, name: ContainerView["name"]): ContainerView | null {
   const root = find(file.root, name);
   if (!root || root.value.kind !== "array" || root.value.value.kind !== "struct") return null;
@@ -225,7 +262,12 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
     items: build(),
     canAdd: arr.items.length > 0,
     add(classPath: string) {
-      const template = arr.items[0];
+      // Prefer a real same-class item as the template so per-type state (item
+      // tag, saved variables) matches the class; fall back to any slot otherwise.
+      const template =
+        name === "inventoryData"
+          ? (findInventoryTemplate(file, arr.items, classPath) ?? arr.items[0])
+          : arr.items[0];
       if (!template) return; // need a template element to clone a valid struct
       const clone = cloneBody(template);
       const key = newKey();
