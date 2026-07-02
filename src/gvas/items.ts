@@ -231,6 +231,23 @@ function findInventoryTemplate(file: GvasFile, items: StructBody[], classPath: s
   return null;
 }
 
+// Any struct_save in the save, used as a last-resort template so items can be
+// added to an EMPTY inventory — which has no slot of its own to clone from.
+// Objects and stacks are always populated in a real save, so this rarely fails.
+function anyItemTemplate(file: GvasFile): StructBody | null {
+  const od = find(file.root, "objectsData")?.value;
+  if (od?.kind === "array" && od.value.kind === "struct" && od.value.items[0]) return od.value.items[0];
+
+  const gv = find(file.root, "GObjStack")?.value;
+  if (gv?.kind === "array" && gv.value.kind === "struct") {
+    for (const entry of gv.value.items) {
+      const items = gobjStackItems(entry);
+      if (items && items[0]) return items[0];
+    }
+  }
+  return null;
+}
+
 export function getContainer(file: GvasFile, name: ContainerView["name"]): ContainerView | null {
   const root = find(file.root, name);
   if (!root || root.value.kind !== "array" || root.value.value.kind !== "struct") return null;
@@ -238,6 +255,12 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
 
   // Inventory items are mirrored into the player's GObjStack entry; equipment isn't.
   const mirror = name === "inventoryData" ? findPlayerStack(file, arr.items) : null;
+
+  // Template for brand-new items. A non-empty container clones its own first
+  // slot; an empty inventory has nothing to clone, so fall back to any item in
+  // the save. Without this an emptied inventory can never be added to again.
+  const fallbackTemplate: StructBody | null =
+    name === "inventoryData" ? (arr.items[0] ?? anyItemTemplate(file)) : (arr.items[0] ?? null);
 
   const build = (): SlotItem[] =>
     arr.items.map((el, index) => {
@@ -260,14 +283,13 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
   const view: ContainerView = {
     name,
     items: build(),
-    canAdd: arr.items.length > 0,
+    canAdd: !!fallbackTemplate,
     add(classPath: string) {
       // Prefer a real same-class item as the template so per-type state (item
-      // tag, saved variables) matches the class; fall back to any slot otherwise.
+      // tag, saved variables) matches the class; fall back to any item otherwise.
       const template =
-        name === "inventoryData"
-          ? (findInventoryTemplate(file, arr.items, classPath) ?? arr.items[0])
-          : arr.items[0];
+        (name === "inventoryData" ? findInventoryTemplate(file, arr.items, classPath) : null) ??
+        fallbackTemplate;
       if (!template) return; // need a template element to clone a valid struct
       const clone = cloneBody(template);
       const key = newKey();
