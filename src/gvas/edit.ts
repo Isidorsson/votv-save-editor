@@ -21,6 +21,45 @@ const MAX_ARRAY_EXPAND = 32;
 
 const stripGuid = (name: string): string => name.replace(/_\d+_[0-9A-Fa-f]{32}$/, "");
 
+// Known native math-struct layouts, exposed as per-component leaves so e.g. the
+// player position (Vector) is editable. The raw bytes alias the loaded file's
+// buffer (BinaryReader.take returns a subarray), so set() swaps in a private
+// copy before mutating — the pristine original behind the Backup button must
+// never change.
+const NATIVE_LAYOUTS: Record<string, { fields: string[]; kind: "int" | "float" }> = {
+  Vector: { fields: ["X", "Y", "Z"], kind: "float" },
+  Rotator: { fields: ["Pitch", "Yaw", "Roll"], kind: "float" },
+  Vector2D: { fields: ["X", "Y"], kind: "float" },
+  Vector4: { fields: ["X", "Y", "Z", "W"], kind: "float" },
+  Quat: { fields: ["X", "Y", "Z", "W"], kind: "float" },
+  LinearColor: { fields: ["R", "G", "B", "A"], kind: "float" },
+  IntVector: { fields: ["X", "Y", "Z"], kind: "int" },
+  IntPoint: { fields: ["X", "Y"], kind: "int" },
+};
+
+function nativeLeaves(
+  path: string,
+  structType: string,
+  body: { kind: "native"; bytes: Uint8Array },
+  out: ScalarLeaf[],
+): void {
+  const layout = NATIVE_LAYOUTS[structType];
+  if (!layout || body.bytes.length !== layout.fields.length * 4) return;
+  const view = () => new DataView(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength);
+  layout.fields.forEach((field, i) => {
+    out.push({
+      path: `${path}.${field}`,
+      kind: layout.kind,
+      get: () => (layout.kind === "int" ? view().getInt32(i * 4, true) : view().getFloat32(i * 4, true)),
+      set: (v) => {
+        body.bytes = body.bytes.slice(); // copy-on-write off the shared file buffer
+        if (layout.kind === "int") view().setInt32(i * 4, Number(v), true);
+        else view().setFloat32(i * 4, Number(v), true);
+      },
+    });
+  });
+}
+
 function leafFor(path: string, v: Value): ScalarLeaf | null {
   switch (v.kind) {
     case "int":
@@ -48,6 +87,8 @@ function walk(props: Property[], prefix: string, out: ScalarLeaf[]): void {
     }
     if (v.kind === "struct" && v.body.kind === "props") {
       walk(v.body.props, path + ".", out);
+    } else if (v.kind === "struct" && v.body.kind === "native") {
+      nativeLeaves(path, v.structType, v.body, out);
     } else if (
       v.kind === "array" &&
       v.value.kind === "struct" &&
@@ -94,6 +135,15 @@ export const FIELD_GROUPS: FieldGroup[] = [
     ],
   },
   {
+    id: "player",
+    title: "Player position",
+    fields: [
+      { path: "playerTransform.Translation.X", label: "X", hint: "world units" },
+      { path: "playerTransform.Translation.Y", label: "Y", hint: "world units" },
+      { path: "playerTransform.Translation.Z", label: "Z", hint: "up axis — add ~100 if stuck in geometry" },
+    ],
+  },
+  {
     id: "upgrades",
     title: "Workstation upgrades",
     fields: [
@@ -112,6 +162,22 @@ export const FIELD_GROUPS: FieldGroup[] = [
       { path: "upgrades.upg_coordMovementSpeed", label: "Coord move speed" },
       { path: "upgrades.upg_coordRadarSpeed", label: "Coord radar speed" },
       { path: "upgrades.upg_coordCooldown", label: "Coord cooldown" },
+    ],
+  },
+  {
+    id: "rules",
+    title: "Game rules",
+    fields: [
+      { path: "localGameRules.funnySetting", label: "Funny setting" },
+      { path: "localGameRules.customContent", label: "Custom content" },
+      { path: "localGameRules.enableMG_math", label: "Math minigame" },
+      { path: "localGameRules.enableMG_wires", label: "Wires minigame" },
+      { path: "localGameRules.enableMG_hack", label: "Hack minigame" },
+      { path: "localGameRules.enableMG_slider", label: "Slider minigame" },
+      { path: "localGameRules.enableMG_maze", label: "Maze minigame" },
+      { path: "localGameRules.enableMG_pipe", label: "Pipe minigame" },
+      { path: "localGameRules.enableMG_simon", label: "Simon minigame" },
+      { path: "localGameRules.enableMG_compare", label: "Compare minigame" },
     ],
   },
   // data.sav (global save) groups — Stats are lifetime counters, Settings are options.
@@ -143,6 +209,8 @@ export const FIELD_GROUPS: FieldGroup[] = [
     title: "Settings",
     fields: [
       { path: "Settings.M_fps", label: "FPS cap" },
+      { path: "Settings.M_mouseSPD", label: "Mouse speed" },
+      { path: "Settings.M_panelFOV", label: "Panel FOV" },
       { path: "Settings.headbobStr", label: "Head bob strength" },
       { path: "Settings.headbobTilt", label: "Head bob tilt" },
       { path: "Settings.viewmodel_bobbing", label: "Viewmodel bobbing" },

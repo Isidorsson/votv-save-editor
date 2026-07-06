@@ -99,6 +99,8 @@ export interface SlotItem {
   label: string;
   classPath: string;
   key: string;
+  /** Set when the saved item id contradicts the class — the game will show a different item. */
+  warn?: string;
   setClass(path: string): void;
 }
 
@@ -106,7 +108,9 @@ export interface ContainerView {
   name: "inventoryData" | "equipment";
   items: SlotItem[];
   canAdd: boolean;
-  add(classPath: string): void;
+  /** Returns true when a same-class donor supplied the item state (correct in-game identity). */
+  add(classPath: string): boolean;
+  duplicate(index: number): void;
   remove(index: number): void;
 }
 
@@ -197,34 +201,128 @@ function topClass(el: StructBody): string {
   return c?.kind === "object" ? c.value : "";
 }
 
-// The right template for a new inventory item is a REAL one of the same class:
-// each item carries per-type state — an internal item tag (e.g. beer→"beer_c",
-// screwdriver→"tool_sc") plus saved variables — that must match its class or the
-// game won't render it. Cloning an arbitrary slot and only swapping the class
-// leaves that state mismatched. Search the inventory, then the world objects,
-// then the object stacks. Returns null when the class exists nowhere in the save
-// (e.g. an item never obtained), in which case the caller falls back to a
-// generic clone that may not display in game.
-function findInventoryTemplate(file: GvasFile, items: StructBody[], classPath: string): StructBody | null {
-  const match = (el: StructBody): boolean => topClass(el) === classPath;
+// The saved item id — first entry of the names[0] batch (e.g. "tool_sc" for a
+// screwdriver, "beer_c" for beer) — is the identity the game's inventory
+// actually shows. The class alone doesn't decide it: the generic prop class
+// carries hundreds of different ids, and the id is not derivable from the
+// class name, so it can only be copied from a real donor item.
+function itemIdOf(el: StructBody): string {
+  if (el.kind !== "props") return "";
+  const names = find(el.props, "names")?.value;
+  if (names?.kind !== "array" || names.value.kind !== "struct") return "";
+  const first = names.value.items[0];
+  if (!first || first.kind !== "props") return "";
+  const batch = first.props[0]?.value;
+  if (batch?.kind !== "array" || batch.value.kind !== "primitive") return "";
+  const id = batch.value.items[0];
+  return typeof id === "string" ? id : "";
+}
 
-  const inInventory = items.find(match);
-  if (inInventory) return inInventory;
-
+// Every game-authored struct_save in the world: objectsData plus all GObjStack
+// entries EXCEPT the player's own stack (`skip`). The player stack mirrors
+// inventoryData and is written by this editor, so treating it as evidence
+// would launder editor-made items into "the game says so".
+function eachWorldSave(file: GvasFile, skip: StructBody[] | null, fn: (el: StructBody) => void): void {
   const od = find(file.root, "objectsData")?.value;
-  if (od?.kind === "array" && od.value.kind === "struct") {
-    const hit = od.value.items.find(match);
-    if (hit) return hit;
-  }
-
+  if (od?.kind === "array" && od.value.kind === "struct") for (const el of od.value.items) fn(el);
   const gv = find(file.root, "GObjStack")?.value;
   if (gv?.kind === "array" && gv.value.kind === "struct") {
     for (const entry of gv.value.items) {
-      const hit = gobjStackItems(entry)?.find(match);
-      if (hit) return hit;
+      const items = gobjStackItems(entry);
+      if (!items || items === skip) continue;
+      for (const el of items) fn(el);
     }
   }
-  return null;
+}
+
+function inventoryItems(file: GvasFile): StructBody[] {
+  const inv = find(file.root, "inventoryData")?.value;
+  return inv?.kind === "array" && inv.value.kind === "struct" ? inv.value.items : [];
+}
+
+// Classes that have a clean donor item somewhere in the save — the ones the
+// picker can add with a correct in-game identity. Inventory rows count only
+// when their id doesn't contradict the class (see idMismatch).
+export function donorClasses(file: GvasFile): Set<string> {
+  const invItems = inventoryItems(file);
+  const mirror = findPlayerStack(file, invItems);
+  const authored = collectAuthoredIds(file, mirror);
+  const s = new Set(authored.byClass.keys());
+  for (const el of invItems) {
+    const c = topClass(el);
+    if (c && !idMismatch(authored, el, c)) s.add(c);
+  }
+  return s;
+}
+
+// Game-authored id evidence: class -> its distinct ids, and id -> the classes
+// that legitimately carry it. Used to flag inventory rows whose id contradicts
+// their class. Only single-id classes are conclusive per-class — the generic
+// prop class legitimately maps to hundreds of ids.
+interface AuthoredIds {
+  byClass: Map<string, Set<string>>;
+  byId: Map<string, Set<string>>;
+}
+
+function collectAuthoredIds(file: GvasFile, skip: StructBody[] | null): AuthoredIds {
+  const byClass = new Map<string, Set<string>>();
+  const byId = new Map<string, Set<string>>();
+  eachWorldSave(file, skip, (el) => {
+    const cls = topClass(el);
+    const id = itemIdOf(el);
+    if (!cls || !id) return;
+    let ids = byClass.get(cls);
+    if (!ids) byClass.set(cls, (ids = new Set()));
+    ids.add(id);
+    let owners = byId.get(id);
+    if (!owners) byId.set(id, (owners = new Set()));
+    owners.add(cls);
+  });
+  return { byClass, byId };
+}
+
+// The conclusive wrong-identity checks. A row renders as a different item in
+// game when the game saved this class with exactly one id and the row's id
+// differs, or when the class has no game-authored donor at all yet the row's
+// id is owned by another class (a donor-less add that cloned a foreign item).
+function idMismatch(authored: AuthoredIds, el: StructBody, classPath: string): string | undefined {
+  const id = itemIdOf(el);
+  if (!id) return undefined;
+  const ids = authored.byClass.get(classPath);
+  if (ids?.size === 1 && !ids.has(id)) {
+    return `Saved id "${id}" doesn't match this class (the game uses "${[...ids][0]}"), so in game it appears as a different item. Remove this row and re-add the item.`;
+  }
+  if (!ids) {
+    const owners = authored.byId.get(id);
+    if (owners && !owners.has(classPath)) {
+      return `Saved id "${id}" belongs to a different item, so in game this row appears as that item instead. Remove the row and re-add once the real item exists in the save.`;
+    }
+  }
+  return undefined;
+}
+
+// The right template for a new inventory item is a REAL one of the same class:
+// each item carries per-type state — the item id above plus saved variables —
+// that must match its class or the game shows the donor's item instead.
+// World donors are searched before the inventory, and inventory rows with a
+// contradicting id are never used, so editor-created impostors don't poison
+// future adds. Returns null when the class has no clean donor anywhere (e.g.
+// an item never obtained), in which case the caller falls back to a generic
+// clone and reports the mismatch.
+function findInventoryTemplate(
+  file: GvasFile,
+  items: StructBody[],
+  classPath: string,
+  mirror: StructBody[] | null,
+  authored: AuthoredIds,
+): StructBody | null {
+  const match = (el: StructBody): boolean => topClass(el) === classPath;
+
+  let hit: StructBody | null = null;
+  eachWorldSave(file, mirror, (el) => {
+    if (!hit && match(el)) hit = el;
+  });
+  return hit ?? items.find((el) => match(el) && !idMismatch(authored, el, classPath)) ?? null;
 }
 
 // Any struct_save in the save, used as a last-resort template so items can be
@@ -327,6 +425,12 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
   const fallbackTemplate: StructBody | null =
     name === "inventoryData" ? (arr.items[0] ?? anyItemTemplate(file)) : (arr.items[0] ?? null);
 
+  // Wrong-identity evidence, excluding the player's own (editor-written) stack
+  // so impostor rows can't vouch for themselves. See idMismatch.
+  const authored = name === "inventoryData" ? collectAuthoredIds(file, mirror) : null;
+  const warnOf = (el: StructBody, classPath: string): string | undefined =>
+    authored && classPath ? idMismatch(authored, el, classPath) : undefined;
+
   const build = (): SlotItem[] =>
     arr.items.map((el, index) => {
       const ref = classRefOf(el, name);
@@ -338,6 +442,7 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
         classPath,
         label: slotLabel(el, name, classPath),
         key,
+        warn: warnOf(el, classPath),
         setClass(path: string) {
           if (ref?.kind === "object") ref.value = path;
           syncMirror();
@@ -351,11 +456,19 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
     canAdd: !!fallbackTemplate,
     add(classPath: string) {
       // Prefer a real same-class item as the template so per-type state (item
-      // tag, saved variables) matches the class; fall back to any item otherwise.
+      // id, saved variables) matches the class; fall back to any item otherwise.
+      // Equipment elements are struct_equipment, so their only donors are other
+      // slots of the same container.
+      const sameClassSlot = arr.items.find((el) => {
+        const r = classRefOf(el, name);
+        return r?.kind === "object" && r.value === classPath;
+      });
       const template =
-        (name === "inventoryData" ? findInventoryTemplate(file, arr.items, classPath) : null) ??
+        (authored ? findInventoryTemplate(file, arr.items, classPath, mirror, authored) : sameClassSlot) ??
         fallbackTemplate;
-      if (!template) return; // need a template element to clone a valid struct
+      if (!template) return false; // need a template element to clone a valid struct
+      const srcRef = classRefOf(template, name);
+      const exact = srcRef?.kind === "object" && srcRef.value === classPath;
       const clone = cloneBody(template);
       const key = newKey();
       rekey(clone, key);
@@ -364,6 +477,18 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
       attach?.(); // create inventoryData in the save the first time it gains an item
       arr.items.push(clone);
       syncMirror(); // keep GObjStack[0].obj an identical twin so the item loads in game
+      view.items = build();
+      return exact;
+    },
+    // Exact clone of an existing slot (same class, same per-item state) with a
+    // fresh key — the safest way to get multiples of an item.
+    duplicate(index: number) {
+      const src = arr.items[index];
+      if (!src) return;
+      const clone = cloneBody(src);
+      rekey(clone, newKey());
+      arr.items.splice(index + 1, 0, clone);
+      syncMirror();
       view.items = build();
     },
     remove(index: number) {

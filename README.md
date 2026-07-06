@@ -24,14 +24,21 @@ bun run build      # static build -> dist/
 - `src/gvas/items.ts` — inventory & equipment views: friendly item names from
   class paths, a harvested catalog of every item type in the save, and
   change/add/remove (clone a template element + fresh key).
-- `src/app.ts` — UI: load, edit, item picker modal, verify, download.
+- `src/diff.ts` — snapshot at load + changeset diff (field edits, item
+  add/remove/change) behind the pre-save review dialog.
+- `src/fs.ts` — File System Access helpers (Chromium): open a save with a
+  writable handle and write it back in place; other browsers fall back to the
+  file input + download flow.
+- `src/app.ts` — UI: load, edit, item picker modal, review, verify, save.
 
 ## Safety contract
 
 `bun run roundtrip` parses your real saves, re-serializes, and asserts the output
 is **byte-identical** to the input. The writer is only trusted because it passes
-this. On save, the app also re-parses its own output before letting you download;
-if that fails, it refuses. **Still back up your original** (button in the UI).
+this. Saving opens a review of every change (revertible per field) before any
+byte is written, and the output must re-parse cleanly or the save is refused.
+The first in-place write also downloads a copy of the original automatically.
+**Still back up your original** (button in the UI).
 
 ## Dev scripts
 

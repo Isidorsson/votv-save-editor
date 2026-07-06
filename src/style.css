@@ -643,18 +643,29 @@ input.bad {
   flex-direction: column;
 }
 .item {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
+  display: flex;
   align-items: center;
   gap: 0.7rem;
   padding: 0.55rem 0.2rem;
   border-bottom: 1px solid var(--line-soft);
+}
+.item .info {
+  flex: 1;
+  min-width: 0;
 }
 .item:last-child {
   border-bottom: none;
 }
 .item .name {
   font-size: 0.88rem;
+}
+/* saved id contradicts the class — this row shows as a different item in game */
+.item .name .wflag {
+  margin-left: 0.5rem;
+  font: 500 0.66rem var(--font-mono);
+  color: var(--warn);
+  white-space: nowrap;
+  cursor: help;
 }
 .item .cls {
   font-family: var(--font-mono);
@@ -815,6 +826,17 @@ input.bad {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* no donor of this class in the save — adding may yield a wrong item in game */
+.pick .pflag {
+  flex: none;
+  align-self: center;
+  font: 500 0.6rem var(--font-mono);
+  color: var(--warn);
+  border: 1px solid color-mix(in oklab, currentColor 40%, transparent);
+  border-radius: 999px;
+  padding: 0.08rem 0.4rem;
+  white-space: nowrap;
 }
 
 /* no-match state — teaches the custom-path escape hatch below it */
@@ -1072,4 +1094,87 @@ kbd {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ------------------------------------------------------------ review dialog */
+
+.review-body {
+  overflow-y: auto;
+  min-height: 2.5rem;
+  display: flex;
+  flex-direction: column;
+}
+.review-none {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
+  padding: 0.5rem 0.2rem;
+}
+.rev-field,
+.rev-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.2rem;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 0.8rem;
+}
+.rev-field:last-child,
+.rev-item:last-child {
+  border-bottom: none;
+}
+.rev-field .path {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.rev-field .vals {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.rev-field .vals s {
+  color: var(--muted);
+  text-decoration-color: var(--danger-dim);
+}
+.rev-field .vals b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.rev-item .sign {
+  font-family: var(--font-mono);
+  width: 1rem;
+  text-align: center;
+  font-weight: 600;
+}
+.rev-item.added .sign {
+  color: var(--accent);
+}
+.rev-item.removed .sign {
+  color: var(--danger);
+}
+.rev-item.changed .sign {
+  color: var(--warn);
+}
+.rev-item .lab {
+  flex: 1;
+  min-width: 0;
+}
+.rev-item .where {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+.review-dest {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

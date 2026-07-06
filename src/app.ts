@@ -1,6 +1,15 @@
 import { readGvas, writeGvas, type GvasFile } from "./gvas/gvas";
 import { collectLeaves, coerceInput, BAR_GROUP_IDS, FIELD_GROUPS, type ScalarLeaf } from "./gvas/edit";
-import { getContainer, buildCatalog, type CatalogEntry, type ContainerView } from "./gvas/items";
+import {
+  getContainer,
+  buildCatalog,
+  donorClasses,
+  friendlyName,
+  type CatalogEntry,
+  type ContainerView,
+} from "./gvas/items";
+import { canPickFiles, handleFromDrop, pickSave, writeInPlace } from "./fs";
+import { diffAgainst, takeSnapshot, type Snapshot } from "./diff";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -41,6 +50,12 @@ const els = {
   customUse: $<HTMLButtonElement>("customUse"),
   toasts: $<HTMLElement>("toasts"),
   dropveil: $<HTMLElement>("dropveil"),
+  review: $<HTMLDialogElement>("review"),
+  reviewClose: $<HTMLButtonElement>("reviewClose"),
+  reviewBody: $<HTMLElement>("reviewBody"),
+  reviewDest: $<HTMLElement>("reviewDest"),
+  reviewCancel: $<HTMLButtonElement>("reviewCancel"),
+  reviewWrite: $<HTMLButtonElement>("reviewWrite"),
 };
 
 interface State {
@@ -48,22 +63,30 @@ interface State {
   leaves: ScalarLeaf[];
   byPath: Map<string, ScalarLeaf>;
   catalog: CatalogEntry[];
+  donors: Set<string>;
   inv: ContainerView | null;
   eq: ContainerView | null;
   original: Uint8Array | null;
   name: string;
   dirty: boolean;
+  handle: FileSystemFileHandle | null; // present => Save writes back in place
+  snapshot: Snapshot | null; // state at load, diffed for the pre-save review
+  backedUp: boolean; // original already downloaded before an in-place write
 }
 const state: State = {
   file: null,
   leaves: [],
   byPath: new Map(),
   catalog: [],
+  donors: new Set(),
   inv: null,
   eq: null,
   original: null,
   name: "",
   dirty: false,
+  handle: null,
+  snapshot: null,
+  backedUp: false,
 };
 
 const UPGRADE_NOMINAL_MAX = 16; // visual reference for the level bar only
@@ -96,11 +119,16 @@ function showState(which: "empty" | "loading" | "editor"): void {
   els.editor.hidden = which !== "editor";
 }
 
-async function loadFile(f: File): Promise<void> {
+async function loadFile(f: File, handle: FileSystemFileHandle | null = null): Promise<void> {
+  if (state.dirty && !confirm(`Discard unsaved edits to ${state.name}?`)) return;
   showState("loading");
   // Yield two frames so the loading state paints before the synchronous parse
-  // of a multi-megabyte save blocks the main thread.
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  // of a multi-megabyte save blocks the main thread. rAF stops firing entirely
+  // in background tabs, so a timeout backstop keeps the load from stalling.
+  await new Promise((r) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => r(undefined)));
+    setTimeout(r, 250);
+  });
   try {
     const bytes = new Uint8Array(await f.arrayBuffer());
     const parsed = readGvas(bytes);
@@ -108,14 +136,23 @@ async function loadFile(f: File): Promise<void> {
     state.original = bytes;
     state.name = f.name;
     state.dirty = false;
+    state.handle = handle;
+    state.backedUp = false;
     state.catalog = buildCatalog(parsed);
     rebuild();
+    state.snapshot = takeSnapshot(state.leaves, state.inv, state.eq);
     els.save.disabled = false;
+    els.save.title = handle
+      ? "Review changes, then write directly back to the file (Ctrl+S)"
+      : "Review changes, then download the edited save (Ctrl+S)";
     els.backup.disabled = false;
     els.fileChip.hidden = false;
     showState("editor");
     renderAll();
-    toast(`Loaded ${f.name} — ${state.leaves.length} fields, ${state.catalog.length} item types`);
+    toast(
+      `Loaded ${f.name} — ${state.leaves.length} fields, ${state.catalog.length} item types` +
+        (handle ? ". Saves write back to the file." : ""),
+    );
   } catch (e) {
     showState(state.file ? "editor" : "empty");
     toast(`Couldn't parse that save: ${(e as Error).message}`, "err");
@@ -126,6 +163,7 @@ function rebuild(): void {
   if (!state.file) return;
   state.leaves = collectLeaves(state.file);
   state.byPath = new Map(state.leaves.map((l) => [l.path, l]));
+  state.donors = donorClasses(state.file);
   state.inv = getContainer(state.file, "inventoryData");
   state.eq = getContainer(state.file, "equipment");
 }
@@ -194,6 +232,26 @@ function renderReadout(): void {
   els.readout.replaceChildren(...stats);
 }
 
+// Floats in the save are 32-bit, so the parsed double often reads as noise like
+// 0.10000000149011612. Show the shortest decimal that maps to the same f32.
+function shortFloat(v: number): string {
+  if (Number.isInteger(v)) return String(v);
+  const target = Math.fround(v);
+  for (let p = 1; p <= 9; p++) {
+    const short = Number(v.toPrecision(p));
+    if (Math.fround(short) === target) return String(short);
+  }
+  return String(v);
+}
+
+function fmtScalar(kind: ScalarLeaf["kind"], v: number | boolean | string): string {
+  return kind === "float" && typeof v === "number" ? shortFloat(v) : String(v);
+}
+
+function displayValue(leaf: ScalarLeaf): string {
+  return fmtScalar(leaf.kind, leaf.get());
+}
+
 // number/text input or a toggle, wired through coerceInput. `after` runs on a
 // committed valid edit (e.g. to update a level bar).
 function makeInput(leaf: ScalarLeaf, after?: () => void): HTMLElement {
@@ -215,7 +273,7 @@ function makeInput(leaf: ScalarLeaf, after?: () => void): HTMLElement {
 
   const input = document.createElement("input");
   input.type = leaf.kind === "str" ? "text" : "number";
-  input.value = String(leaf.get());
+  input.value = displayValue(leaf);
   input.onchange = () => {
     const res = coerceInput(input.value, leaf.kind);
     if (!res.ok) {
@@ -224,8 +282,8 @@ function makeInput(leaf: ScalarLeaf, after?: () => void): HTMLElement {
       return;
     }
     input.classList.remove("bad");
-    input.value = String(res.value);
     leaf.set(res.value);
+    input.value = displayValue(leaf);
     commit(after);
   };
   return input;
@@ -355,13 +413,22 @@ function renderContainerSection(
     const row = document.createElement("div");
     row.className = item.classPath ? "item" : "item empty";
     const info = document.createElement("div");
+    info.className = "info";
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = item.classPath ? item.label : "(empty slot)";
+    if (item.warn) {
+      const w = document.createElement("span");
+      w.className = "wflag";
+      w.textContent = "⚠ wrong id";
+      w.title = item.warn;
+      name.append(w);
+    }
     const cls = document.createElement("div");
     cls.className = "cls";
     cls.textContent = item.classPath || "—";
     info.append(name, cls);
+    row.append(info);
 
     const change = document.createElement("button");
     change.className = "btn ghost sm";
@@ -371,17 +438,33 @@ function renderContainerSection(
         item.setClass(path);
         afterStructuralEdit();
       });
+    row.append(change);
+
+    // Equipment rows are named slots, so duplicating one makes no sense there.
+    if (kind === "inventory" && item.classPath) {
+      const dup = document.createElement("button");
+      dup.className = "btn ghost sm";
+      dup.textContent = "⧉";
+      dup.title = "Duplicate item (exact copy, new key)";
+      dup.setAttribute("aria-label", `Duplicate ${item.label}`);
+      dup.onclick = () => {
+        view.duplicate(item.index);
+        afterStructuralEdit();
+      };
+      row.append(dup);
+    }
 
     const del = document.createElement("button");
     del.className = "btn danger";
     del.textContent = "✕";
     del.title = "Remove item";
+    del.setAttribute("aria-label", `Remove ${item.label}`);
     del.onclick = () => {
       view.remove(item.index);
       afterStructuralEdit();
     };
+    row.append(del);
 
-    row.append(info, change, del);
     host.append(row);
   }
 }
@@ -449,6 +532,14 @@ function renderPickList(query: string): void {
     c.className = "pcls";
     c.textContent = entry.classPath.split("/").pop() ?? "";
     row.append(n, c);
+    if (!state.donors.has(entry.classPath)) {
+      const f = document.createElement("span");
+      f.className = "pflag";
+      f.textContent = "not in save";
+      f.title =
+        "No item of this class exists in this save to copy state from — if added, it may appear as a different item in game.";
+      row.append(f);
+    }
     row.onclick = () => choose(entry.classPath);
     row.onmousemove = () => {
       if (pickActive !== i) setActive(i);
@@ -623,25 +714,134 @@ function download(bytes: Uint8Array, name: string): void {
   URL.revokeObjectURL(url);
 }
 
+// ------------------------------------------------------------------- review
+
+// Save opens a review of everything that will differ from the loaded file —
+// field edits (revertible) and item add/remove/change — before any byte is
+// written. The write itself happens in doWrite() after confirmation.
+
+function revRow(c: { leaf: ScalarLeaf; before: number | boolean | string; after: number | boolean | string }): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "rev-field";
+  const path = document.createElement("span");
+  path.className = "path";
+  path.textContent = c.leaf.path;
+  const vals = document.createElement("span");
+  vals.className = "vals";
+  const before = document.createElement("s");
+  before.textContent = fmtScalar(c.leaf.kind, c.before);
+  const after = document.createElement("b");
+  after.textContent = fmtScalar(c.leaf.kind, c.after);
+  vals.append(before, " → ", after);
+  const undo = document.createElement("button");
+  undo.className = "btn ghost sm";
+  undo.textContent = "↺";
+  undo.title = `Revert to ${fmtScalar(c.leaf.kind, c.before)}`;
+  undo.setAttribute("aria-label", `Revert ${c.leaf.path}`);
+  undo.onclick = () => {
+    c.leaf.set(c.before);
+    renderGroups();
+    renderRaw();
+    renderReadout();
+    renderReview();
+  };
+  row.append(path, vals, undo);
+  return row;
+}
+
+function renderReview(): void {
+  if (!state.snapshot) return;
+  const cs = diffAgainst(state.snapshot, state.leaves, state.inv, state.eq);
+  const frag = document.createDocumentFragment();
+
+  if (!cs.fields.length && !cs.items.length) {
+    const p = document.createElement("p");
+    p.className = "review-none";
+    p.textContent = "No changes — the file will be rewritten as loaded.";
+    frag.append(p);
+  }
+  for (const c of cs.items) {
+    const row = document.createElement("div");
+    row.className = `rev-item ${c.action}`;
+    const sign = document.createElement("span");
+    sign.className = "sign";
+    sign.textContent = c.action === "added" ? "+" : c.action === "removed" ? "−" : "~";
+    const label = document.createElement("span");
+    label.className = "lab";
+    label.textContent = c.label;
+    const where = document.createElement("span");
+    where.className = "where";
+    where.textContent = c.container;
+    row.append(sign, label, where);
+    frag.append(row);
+  }
+  for (const c of cs.fields) frag.append(revRow(c));
+
+  els.reviewBody.replaceChildren(frag);
+  els.reviewDest.textContent = state.handle ? `writes into ${state.name}` : `downloads ${state.name}`;
+  els.reviewWrite.textContent = state.handle ? "Write to file" : "Download save";
+}
+
 function save(): void {
   if (!state.file) return;
+  renderReview();
+  els.review.showModal();
+  els.reviewWrite.focus();
+}
+
+async function doWrite(): Promise<void> {
+  if (!state.file) return;
+  let out: Uint8Array;
   try {
-    const out = writeGvas(state.file);
+    out = writeGvas(state.file);
     readGvas(out); // integrity gate: output must re-parse cleanly
-    download(out, state.name);
-    state.dirty = false;
-    els.fileChip.classList.remove("dirty");
-    renderChip();
-    renderReadout();
-    toast(`Saved ${state.name}. Keep a backup of your original.`);
   } catch (e) {
     toast(`Save blocked — output failed verification: ${(e as Error).message}`, "err");
+    return;
   }
+
+  if (state.handle) {
+    // First in-place write drops a copy of the original in Downloads first, so
+    // overwriting the real save is always reversible.
+    if (!state.backedUp && state.original) {
+      download(state.original, state.name.replace(/\.sav$/i, ".backup.sav"));
+      state.backedUp = true;
+      toast("Backup of the original downloaded");
+    }
+    try {
+      await writeInPlace(state.handle, out);
+      toast(`Written back to ${state.name}`);
+    } catch (e) {
+      download(out, state.name);
+      toast(`Couldn't write in place (${(e as Error).message}) — downloaded instead`, "err");
+    }
+  } else {
+    download(out, state.name);
+    toast(`Saved ${state.name}. Keep a backup of your original.`);
+  }
+
+  state.dirty = false;
+  state.snapshot = takeSnapshot(state.leaves, state.inv, state.eq);
+  els.fileChip.classList.remove("dirty");
+  renderChip();
+  renderReadout();
 }
 
 // --------------------------------------------------------------------- wiring
 
-const pickOpen = () => els.file.click();
+// Chromium gets the native picker (yields a writable handle for in-place
+// saves); everything else falls back to the plain file input.
+const pickOpen = () => {
+  if (!canPickFiles()) {
+    els.file.click();
+    return;
+  }
+  pickSave()
+    .then((picked) => {
+      if (picked) void loadFile(picked.file, picked.handle);
+    })
+    .catch((e) => toast(`Couldn't open file: ${(e as Error).message}`, "err"));
+};
 els.open.onclick = pickOpen;
 els.emptyOpen.onclick = pickOpen;
 els.file.onchange = () => {
@@ -658,20 +858,38 @@ els.backup.onclick = () => {
 };
 els.search.oninput = () => filterRows(els.search.value);
 
-els.invAdd.onclick = () =>
-  openPicker("Add inventory item", (path) => {
-    state.inv?.add(path);
-    afterStructuralEdit();
-  });
-els.eqAdd.onclick = () =>
-  openPicker("Add equipment item", (path) => {
-    state.eq?.add(path);
-    afterStructuralEdit();
-  });
+// An add without a same-class donor clones another item's state, so the game
+// would show that donor's identity — warn instead of failing silently.
+function addWithDonorCheck(view: ContainerView | null, path: string): void {
+  const exact = view?.add(path) ?? false;
+  afterStructuralEdit();
+  if (!exact) {
+    toast(
+      `No ${friendlyName(path)} exists in this save to copy state from — in game it may appear as a different item. Obtain one in game first, or duplicate an existing row.`,
+      "err",
+    );
+  }
+}
+
+els.invAdd.onclick = () => openPicker("Add inventory item", (path) => addWithDonorCheck(state.inv, path));
+els.eqAdd.onclick = () => openPicker("Add equipment item", (path) => addWithDonorCheck(state.eq, path));
 
 els.pickSearch.oninput = () => renderPickList(els.pickSearch.value);
 els.pickSearch.onkeydown = onPickKeydown;
 els.modalClose.onclick = () => els.modal.close();
+els.modal.onclick = (e) => {
+  if (e.target === els.modal) els.modal.close(); // backdrop click
+};
+els.reviewClose.onclick = () => els.review.close();
+els.reviewCancel.onclick = () => els.review.close();
+els.review.onclick = (e) => {
+  if (e.target === els.review) els.review.close(); // backdrop click
+};
+els.reviewWrite.onclick = () => {
+  els.review.close();
+  void doWrite();
+};
+
 els.customUse.onclick = useCustomPath;
 els.customPath.onkeydown = (e) => {
   if (e.key === "Enter") {
@@ -679,6 +897,17 @@ els.customPath.onkeydown = (e) => {
     useCustomPath();
   }
 };
+
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    if (!els.save.disabled) save();
+  }
+});
+
+window.addEventListener("beforeunload", (e) => {
+  if (state.dirty) e.preventDefault();
+});
 
 // drag & drop anywhere
 let dragDepth = 0;
@@ -699,5 +928,8 @@ window.addEventListener("drop", (e) => {
   dragDepth = 0;
   els.dropveil.hidden = true;
   const f = e.dataTransfer?.files?.[0];
-  if (f) void loadFile(f);
+  if (!f) return;
+  // Handle must be requested synchronously inside the event; resolve later.
+  const handle = e.dataTransfer ? handleFromDrop(e.dataTransfer) : Promise.resolve(null);
+  void handle.then((h) => loadFile(f, h));
 });

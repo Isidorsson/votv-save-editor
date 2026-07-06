@@ -137,6 +137,19 @@
       </div>
     </dialog>
 
+    <dialog id="review" class="modal review" aria-labelledby="reviewTitle">
+      <div class="modal-head">
+        <strong id="reviewTitle">Review changes</strong>
+        <button id="reviewClose" class="btn ghost sm" aria-label="Close review">✕</button>
+      </div>
+      <div id="reviewBody" class="review-body"></div>
+      <div class="modal-foot">
+        <span id="reviewDest" class="review-dest"></span>
+        <button id="reviewCancel" class="btn ghost">Cancel</button>
+        <button id="reviewWrite" class="btn primary">Write save</button>
+      </div>
+    </dialog>
+
     <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <div id="dropveil" class="dropveil" hidden><span>Release to load save</span></div>
