@@ -827,7 +827,7 @@ input.bad {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* no donor of this class in the save — adding may yield a wrong item in game */
+/* no donor in the save or bundled templates — adding may yield a wrong item in game */
 .pick .pflag {
   flex: none;
   align-self: center;

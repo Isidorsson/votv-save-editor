@@ -107,6 +107,19 @@ export function readGvas(bytes: Uint8Array): GvasFile {
   return { header, root, trailer };
 }
 
+// A props-kind struct element (e.g. one struct_save item) is self-contained: a
+// tagged property list ending in "None". These serialize one element to bytes
+// and back, so authored item state can be stored outside a save (item-templates).
+export function encodeStructBody(body: StructBody): Uint8Array {
+  const w = new BinaryWriter();
+  writeStructBody(w, body);
+  return w.finish();
+}
+
+export function decodeStructBody(bytes: Uint8Array): StructBody {
+  return readStructBody(new BinaryReader(bytes), "", bytes.length);
+}
+
 function skipHeader(r: BinaryReader): void {
   const magic = String.fromCharCode(r.u8(), r.u8(), r.u8(), r.u8());
   if (magic !== "GVAS") throw new Error(`not a GVAS file (magic=${magic})`);

@@ -5,6 +5,7 @@ import {
   buildCatalog,
   donorClasses,
   friendlyName,
+  loadItemTemplates,
   type CatalogEntry,
   type ContainerView,
 } from "./gvas/items";
@@ -130,6 +131,7 @@ async function loadFile(f: File, handle: FileSystemFileHandle | null = null): Pr
     setTimeout(r, 250);
   });
   try {
+    await loadItemTemplates(); // bundled donor states must be ready before views build
     const bytes = new Uint8Array(await f.arrayBuffer());
     const parsed = readGvas(bytes);
     state.file = parsed;
@@ -535,9 +537,9 @@ function renderPickList(query: string): void {
     if (!state.donors.has(entry.classPath)) {
       const f = document.createElement("span");
       f.className = "pflag";
-      f.textContent = "not in save";
+      f.textContent = "no template";
       f.title =
-        "No item of this class exists in this save to copy state from — if added, it may appear as a different item in game.";
+        "No item of this class exists in this save or the bundled template library to copy state from — if added, it may appear as a different item in game.";
       row.append(f);
     }
     row.onclick = () => choose(entry.classPath);
@@ -858,14 +860,15 @@ els.backup.onclick = () => {
 };
 els.search.oninput = () => filterRows(els.search.value);
 
-// An add without a same-class donor clones another item's state, so the game
-// would show that donor's identity — warn instead of failing silently.
+// An add without a same-class donor or bundled template clones another item's
+// state, so the game would show that donor's identity — warn instead of
+// failing silently.
 function addWithDonorCheck(view: ContainerView | null, path: string): void {
   const exact = view?.add(path) ?? false;
   afterStructuralEdit();
   if (!exact) {
     toast(
-      `No ${friendlyName(path)} exists in this save to copy state from — in game it may appear as a different item. Obtain one in game first, or duplicate an existing row.`,
+      `No ${friendlyName(path)} exists in this save or the bundled templates to copy state from — in game it may appear as a different item. Obtain one in game first, or duplicate an existing row.`,
       "err",
     );
   }

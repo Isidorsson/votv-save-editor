@@ -15,7 +15,9 @@ import type {
   StructBody,
   Value,
 } from "./gvas";
+import { decodeStructBody } from "./gvas";
 import { ITEM_NAME_OVERRIDES, KNOWN_ITEM_BASES } from "./item-catalog";
+import { ITEM_TEMPLATE_INDEX, ITEM_TEMPLATES_GZ } from "./item-templates";
 
 const stripGuid = (name: string): string => name.replace(/_\d+_[0-9A-Fa-f]{32}$/, "");
 
@@ -240,9 +242,61 @@ function inventoryItems(file: GvasFile): StructBody[] {
   return inv?.kind === "array" && inv.value.kind === "struct" ? inv.value.items : [];
 }
 
-// Classes that have a clean donor item somewhere in the save — the ones the
-// picker can add with a correct in-game identity. Inventory rows count only
-// when their id doesn't contradict the class (see idMismatch).
+// Every world-authored element that carries an item id, with its class — the
+// raw evidence stream behind donorClasses and the template miner
+// (scripts/mine-item-templates.ts). Excludes the player's own stack, which
+// this editor writes.
+export function mineAuthoredElements(file: GvasFile): { classPath: string; id: string; el: StructBody }[] {
+  const mirror = findPlayerStack(file, inventoryItems(file));
+  const out: { classPath: string; id: string; el: StructBody }[] = [];
+  eachWorldSave(file, mirror, (el) => {
+    const classPath = topClass(el);
+    const id = itemIdOf(el);
+    if (classPath && id) out.push({ classPath, id, el });
+  });
+  return out;
+}
+
+// Game-authored item state bundled with the editor (generated from real saves
+// by scripts/mine-item-templates.ts). Gives a donor-less add the class's real
+// item id and saved variables instead of a foreign item's.
+let templateBlob: Uint8Array | null = null;
+
+// Decompresses the bundled blob once; app.ts awaits this before building views
+// so the sync accessors below are ready. Never throws — on any failure the
+// editor simply behaves as if no templates were bundled.
+export async function loadItemTemplates(): Promise<void> {
+  if (templateBlob || !ITEM_TEMPLATES_GZ) return;
+  try {
+    const gz = Uint8Array.from(atob(ITEM_TEMPLATES_GZ), (c) => c.charCodeAt(0));
+    const stream = new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"));
+    templateBlob = new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch (e) {
+    console.warn("bundled item templates unavailable:", e);
+  }
+}
+
+function bundledTemplate(classPath: string): StructBody | null {
+  if (!templateBlob) return null;
+  const span = ITEM_TEMPLATE_INDEX[classPath];
+  if (!span) return null;
+  return decodeStructBody(templateBlob.subarray(span[0], span[0] + span[1]));
+}
+
+const bundledIds = new Map<string, string>();
+function bundledTemplateId(classPath: string): string | undefined {
+  if (!templateBlob || !(classPath in ITEM_TEMPLATE_INDEX)) return undefined;
+  let id = bundledIds.get(classPath);
+  if (id === undefined) {
+    const t = bundledTemplate(classPath);
+    bundledIds.set(classPath, (id = t ? itemIdOf(t) : ""));
+  }
+  return id || undefined;
+}
+
+// Classes that can be added with a correct in-game identity: a clean donor item
+// somewhere in the save, or a bundled game-authored template. Inventory rows
+// count only when their id doesn't contradict the class (see idMismatch).
 export function donorClasses(file: GvasFile): Set<string> {
   const invItems = inventoryItems(file);
   const mirror = findPlayerStack(file, invItems);
@@ -252,6 +306,7 @@ export function donorClasses(file: GvasFile): Set<string> {
     const c = topClass(el);
     if (c && !idMismatch(authored, el, c)) s.add(c);
   }
+  if (templateBlob) for (const c of Object.keys(ITEM_TEMPLATE_INDEX)) s.add(c);
   return s;
 }
 
@@ -288,6 +343,7 @@ function collectAuthoredIds(file: GvasFile, skip: StructBody[] | null): Authored
 function idMismatch(authored: AuthoredIds, el: StructBody, classPath: string): string | undefined {
   const id = itemIdOf(el);
   if (!id) return undefined;
+  if (id === bundledTemplateId(classPath)) return undefined; // matches game-authored bundled state
   const ids = authored.byClass.get(classPath);
   if (ids?.size === 1 && !ids.has(id)) {
     return `Saved id "${id}" doesn't match this class (the game uses "${[...ids][0]}"), so in game it appears as a different item. Remove this row and re-add the item.`;
@@ -453,19 +509,22 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
   const view: ContainerView = {
     name,
     items: build(),
-    canAdd: !!fallbackTemplate,
+    // Inventory can always try an add: bundled templates work without any
+    // in-save item to clone. Equipment still needs a real slot as template.
+    canAdd: !!fallbackTemplate || name === "inventoryData",
     add(classPath: string) {
       // Prefer a real same-class item as the template so per-type state (item
-      // id, saved variables) matches the class; fall back to any item otherwise.
-      // Equipment elements are struct_equipment, so their only donors are other
-      // slots of the same container.
+      // id, saved variables) matches the class; then a bundled game-authored
+      // template; only then fall back to cloning a foreign item. Equipment
+      // elements are struct_equipment — bundled templates (struct_save) don't
+      // apply, so their only donors are other slots of the same container.
       const sameClassSlot = arr.items.find((el) => {
         const r = classRefOf(el, name);
         return r?.kind === "object" && r.value === classPath;
       });
-      const template =
-        (authored ? findInventoryTemplate(file, arr.items, classPath, mirror, authored) : sameClassSlot) ??
-        fallbackTemplate;
+      const donor = authored ? findInventoryTemplate(file, arr.items, classPath, mirror, authored) : sameClassSlot;
+      const bundled = !donor && name === "inventoryData" ? bundledTemplate(classPath) : null;
+      const template = donor ?? bundled ?? fallbackTemplate;
       if (!template) return false; // need a template element to clone a valid struct
       const srcRef = classRefOf(template, name);
       const exact = srcRef?.kind === "object" && srcRef.value === classPath;

@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "roundtrip": "bun run scripts/roundtrip.ts",
+    "mine-templates": "bun run scripts/mine-item-templates.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
