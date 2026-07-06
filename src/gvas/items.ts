@@ -11,6 +11,7 @@ import type {
   MapEntryData,
   MapValue,
   Property,
+  StructArrayHeader,
   StructBody,
   Value,
 } from "./gvas";
@@ -248,10 +249,69 @@ function anyItemTemplate(file: GvasFile): StructBody | null {
   return null;
 }
 
+// A fresh, empty StructProperty array. The inner tag (structType + guid) is
+// cloned from any existing array of the same struct type in the save — the guid
+// is keyed on the struct type, so this yields the exact header the game writes
+// for this container. Returns null when the save has no such array to borrow a
+// valid header from (e.g. the stats-only data.sav).
+function makeEmptyStructArray(file: GvasFile, name: string, structType: string): Property | null {
+  const tmpl = file.root.find(
+    (p) =>
+      p.value.kind === "array" &&
+      p.value.value.kind === "struct" &&
+      p.value.value.header.structType === structType,
+  );
+  if (!tmpl || tmpl.value.kind !== "array" || tmpl.value.value.kind !== "struct") return null;
+  const src = tmpl.value.value.header;
+  const header: StructArrayHeader = {
+    propName: name,
+    propType: src.propType,
+    arrayIndex: src.arrayIndex,
+    structType,
+    guid: src.guid.slice(),
+    guidFlag: src.guidFlag,
+  };
+  return {
+    name,
+    type: "ArrayProperty",
+    arrayIndex: 0,
+    guidFlag: 0,
+    value: { kind: "array", innerType: "StructProperty", value: { kind: "struct", header, items: [] } },
+  };
+}
+
+// inventoryData naturally precedes objectsData in the save layout; slot a
+// synthesized property there. Order is cosmetic (properties are name-tagged),
+// but this keeps the layout matching a save the game wrote itself.
+function insertBeforeObjects(file: GvasFile, prop: Property): void {
+  const at = file.root.findIndex((p) => stripGuid(p.name) === "objectsData");
+  if (at >= 0) file.root.splice(at, 0, prop);
+  else file.root.push(prop);
+}
+
 export function getContainer(file: GvasFile, name: ContainerView["name"]): ContainerView | null {
-  const root = find(file.root, name);
-  if (!root || root.value.kind !== "array" || root.value.value.kind !== "struct") return null;
-  const arr: ArrayValue & { kind: "struct" } = root.value.value;
+  // The game omits inventoryData entirely while the player carries nothing, which
+  // would hide the whole section and its "add" button. Synthesize an empty
+  // struct_save array so it still renders and can be added to; the property is
+  // only spliced into the save on the first add (see `attach`), so an untouched
+  // save stays byte-identical. Equipment and other absent containers keep the
+  // old behavior of returning null.
+  const existing = find(file.root, name);
+  let attach: (() => void) | null = null;
+  let prop: Property;
+  if (existing) {
+    if (existing.value.kind !== "array" || existing.value.value.kind !== "struct") return null;
+    prop = existing;
+  } else {
+    const synth = name === "inventoryData" ? makeEmptyStructArray(file, name, "struct_save") : null;
+    if (!synth) return null;
+    prop = synth;
+    attach = () => {
+      if (!find(file.root, name)) insertBeforeObjects(file, synth);
+    };
+  }
+  if (prop.value.kind !== "array" || prop.value.value.kind !== "struct") return null;
+  const arr: ArrayValue & { kind: "struct" } = prop.value.value;
 
   // Inventory items are mirrored into the player's GObjStack entry; equipment isn't.
   const mirror = name === "inventoryData" ? findPlayerStack(file, arr.items) : null;
@@ -296,6 +356,7 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
       rekey(clone, key);
       const ref = classRefOf(clone, name);
       if (ref?.kind === "object") ref.value = classPath;
+      attach?.(); // create inventoryData in the save the first time it gains an item
       arr.items.push(clone);
       if (mirror) mirror.push(cloneBody(clone)); // identical twin, same key + class
       view.items = build();
