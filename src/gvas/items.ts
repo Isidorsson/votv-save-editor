@@ -143,13 +143,14 @@ function rekey(element: StructBody, key: string): void {
 // ------------------------------------------------------------- GObjStack sync ----
 
 // The player's carried inventory is stored redundantly in TWO structures that
-// must agree: `inventoryData` (the flat list this view edits) and one entry of
-// `GObjStack` — the stack the game actually loads into the inventory on load.
-// Adding an item to inventoryData alone leaves it unregistered, so it never
-// appears in game. We locate the player's GObjStack entry as the one whose item
-// keys overlap inventoryData (item keys are globally unique, so it's
-// unambiguous) and mirror every add/remove/class-change into it. A fresh/empty
-// inventory finds no stack, and we fall back to editing inventoryData alone.
+// must agree: `inventoryData` (the flat list this view edits) and the first
+// entry of `GObjStack` — `GObjStack[0].obj`, the stack the game actually loads
+// into the inventory on load. The two are exact deep-clone twins (same items,
+// same order). Editing inventoryData alone leaves the item unregistered, so it
+// never appears in game; every edit is mirrored into the stack to keep the twins
+// identical. When the inventory already has items we confirm the stack by
+// key-overlap (item keys are globally unique); an empty or drifted inventory
+// falls back to the first stack, which is always the player's.
 
 function keyOf(el: StructBody | undefined): string {
   if (!el || el.kind !== "props") return "";
@@ -157,8 +158,8 @@ function keyOf(el: StructBody | undefined): string {
   return k?.kind === "name" ? k.value : "";
 }
 
-function gobjStackItems(entry: StructBody): StructBody[] | null {
-  if (entry.kind !== "props") return null;
+function gobjStackItems(entry: StructBody | undefined): StructBody[] | null {
+  if (!entry || entry.kind !== "props") return null;
   const obj = find(entry.props, "obj")?.value;
   return obj?.kind === "array" && obj.value.kind === "struct" ? obj.value.items : null;
 }
@@ -166,8 +167,9 @@ function gobjStackItems(entry: StructBody): StructBody[] | null {
 function findPlayerStack(file: GvasFile, invItems: StructBody[]): StructBody[] | null {
   const gv = find(file.root, "GObjStack")?.value;
   if (!gv || gv.kind !== "array" || gv.value.kind !== "struct") return null;
+
+  // With items present, key-overlap pins the stack unambiguously.
   const invKeys = new Set(invItems.map(keyOf).filter(Boolean));
-  if (!invKeys.size) return null;
   let best: StructBody[] | null = null;
   let bestOverlap = 0;
   for (const entry of gv.value.items) {
@@ -179,20 +181,13 @@ function findPlayerStack(file: GvasFile, invItems: StructBody[]): StructBody[] |
       best = items;
     }
   }
-  return best;
-}
+  if (best) return best;
 
-function syncStackClass(items: StructBody[], key: string, classPath: string): void {
-  const el = items.find((e) => keyOf(e) === key);
-  if (el && el.kind === "props") {
-    const ref = find(el.props, "class")?.value;
-    if (ref?.kind === "object") ref.value = classPath;
-  }
-}
-
-function removeFromStack(items: StructBody[], key: string): void {
-  const i = items.findIndex((e) => keyOf(e) === key);
-  if (i >= 0) items.splice(i, 1);
+  // No overlap — an empty inventory (no keys) or one that drifted from its stack
+  // (e.g. items added before this mirroring existed). The player's carried
+  // inventory is always the first GObjStack entry, so fall back to it; syncing it
+  // is what makes added items load in game and repairs the drift.
+  return gobjStackItems(gv.value.items[0]);
 }
 
 // A struct_save's blueprint class lives in its top-level `class` ObjectProperty.
@@ -316,6 +311,16 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
   // Inventory items are mirrored into the player's GObjStack entry; equipment isn't.
   const mirror = name === "inventoryData" ? findPlayerStack(file, arr.items) : null;
 
+  // Rebuild the stack as an exact deep-clone twin of inventoryData after every
+  // edit. Full rebuild (rather than an incremental push/splice) keeps the two in
+  // lockstep and self-heals a save whose copies had drifted — e.g. items added
+  // before this mirroring existed, which is why they never loaded in game.
+  const syncMirror = (): void => {
+    if (!mirror) return;
+    mirror.length = 0;
+    for (const el of arr.items) mirror.push(cloneBody(el));
+  };
+
   // Template for brand-new items. A non-empty container clones its own first
   // slot; an empty inventory has nothing to clone, so fall back to any item in
   // the save. Without this an emptied inventory can never be added to again.
@@ -335,7 +340,7 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
         key,
         setClass(path: string) {
           if (ref?.kind === "object") ref.value = path;
-          if (mirror && key) syncStackClass(mirror, key, path);
+          syncMirror();
         },
       };
     });
@@ -358,13 +363,12 @@ export function getContainer(file: GvasFile, name: ContainerView["name"]): Conta
       if (ref?.kind === "object") ref.value = classPath;
       attach?.(); // create inventoryData in the save the first time it gains an item
       arr.items.push(clone);
-      if (mirror) mirror.push(cloneBody(clone)); // identical twin, same key + class
+      syncMirror(); // keep GObjStack[0].obj an identical twin so the item loads in game
       view.items = build();
     },
     remove(index: number) {
-      const key = keyOf(arr.items[index]);
       arr.items.splice(index, 1);
-      if (mirror && key) removeFromStack(mirror, key);
+      syncMirror();
       view.items = build();
     },
   };
